@@ -12,7 +12,7 @@ movies = subset(movies,select = c(id,title,genres,popularity,revenue,runtime,vot
 
 movies = movies[movies$genres != "[]",]
 
-
+#Parse json in genres column
 convert_json <- function(x){
   json_df = fromJSON(x)
   
@@ -29,7 +29,7 @@ for(i in 1:nrow(movies)){
   movies$genres[i] = convert_json(movies$genres[i])
 }
 
-
+#Split genres into multiple binary columns by finding the unique values. 
 t <- strsplit(movies$genres, split = ",")
 tags <- unique(str_trim(unlist(t)))
 tags = tags[tags!=""]
@@ -41,6 +41,7 @@ movies=cbind(movies,df2)
 
 movies = subset(movies,select = c(id,title,popularity,revenue,runtime,9:28,vote_average,vote_count)) #change column orderings
 
+#Remove missing values
 movies=movies[movies$vote_average != 0,]
 
 movies=movies[!is.na(movies$runtime),]
@@ -62,9 +63,9 @@ length(popularity_zeros) / length(movies$popularity)
 colnames(movies)[9] = "Science_Fiction"
 colnames(movies)[25] = "TV_Movie"
 
+#Normalization
 movies$revenue = movies$revenue/max(movies$revenue)
 movies$popularity = movies$popularity/max(movies$popularity)
-movies$budget = movies$budget/max(movies$budget)
 movies$runtime = movies$runtime/max(movies$runtime)
 movies$vote_count = movies$vote_count/max(movies$vote_count)
 
@@ -89,7 +90,7 @@ ggplot(data=movies,aes(x="vote_average",y=vote_average))+geom_boxplot()
 # 1- Popularity
 
 #draw box plot of Popularity feature.(column=3)
-OUTLIERS <- boxplot(movies$popularity)$out #outlier values.
+OUTLIERS <- boxplot(movies$popularity,xlab="Popularity")$out #outlier values.
 movies <- movies[-which(movies$popularity %in% OUTLIERS),] # Removed outlier values from popularity column
 
 ###############################################
@@ -132,7 +133,6 @@ movies$vote_average_cat <- cut(movies$vote_average,breaks = sep,labels = movie_t
 colnames(movies)[9] = "Science_Fiction"
 colnames(movies)[25] = "TV_Movie"
 
-#movies[,6:25] = movies[,6:25] == 1
 
 library(corrplot) # to draw correlation matrix
 
@@ -146,32 +146,132 @@ summary(sub)
 cor(sub)
 forcorrplot <- cor(sub)
 corrplot(forcorrplot)
-corrplot(forcorrplot, method="color")
-corrplot(forcorrplot, method="color", order="hclust")
-corrplot.mixed(forcorrplot, upper="number", lower="color", order="hclust")
 
 cor(movies$popularity,movies$vote_average)
 
 movies = subset(movies,select = -c(vote_count))
 
+#Corralation matrix after vote_count is removed
+sub = subset(movies,select = c(popularity,revenue, runtime, Action, Adventure, Fantasy, Science_Fiction, Crime, Drama, Thriller, Animation, Family, Western, Comedy, Romance, Horror,Mystery,History,War,Music,Documentary,Foreign,TV_Movie,vote_average))
+
+
+forcorrplot <- cor(sub)
+corrplot(forcorrplot)
 
 
 #MODEL DEVELOPMENT
-#Desicion Tree
 dt_acc <- numeric()
+dt_recall <- numeric()
+dt_precision <- numeric()
+dt_f <- numeric()
+
+
+trial_sum <- numeric(100)
+trial_n <- numeric(100)
+knn_recall <- numeric()
+knn_precision <- numeric()
+knn_f <- numeric()
+knn_ks = numeric()
+
+
+rf_acc <- numeric()
+rf_recall <- numeric()
+rf_precision <- numeric()
+rf_f <- numeric()
+
+dt_time = 0
+rf_time = 0
+knn_time = 0
+
+library(class)
+require(randomForest)
+
+
 set.seed(1815850)
 
+#ONE LOOP that executes every model to give them the same parts of the dataset.
+t_1=Sys.time()
 for(i in 1:100){
   sub <- sample(1:nrow(movies), size=nrow(movies)*0.7)
+  
+  #Desicion Tree
+  time_a = Sys.time()
   fit2 <- tree(vote_average_cat ~ Action + Adventure + Fantasy + Science_Fiction + Crime +
                  Drama + Thriller + Animation + Family + Western + Comedy + Romance + Horror + 
                  Mystery + History + War + Music + Documentary + Foreign + TV_Movie +
-                 popularity + revenue + vote_count,data=movies, split = "deviance",subset = sub)
+                 popularity + revenue,data=movies, split = "deviance",subset = sub)
   test_predict <- table(predict(fit2, movies[-sub, ], type = "class"), movies[-sub, "vote_average_cat"])
   dt_acc <- c(dt_acc, sum(diag(test_predict)) / sum(test_predict))
+  curr_recall = test_predict[1,"Bad"]/(test_predict[1,"Bad"]+test_predict[2,"Bad"])
+  curr_precision = test_predict[1,"Bad"]/(test_predict[1,"Bad"]+test_predict[1,"Good"])
+  curr_f = 2 * (curr_precision * curr_recall) / (curr_precision + curr_recall)
+  dt_f <- c(dt_f,curr_f)
+  dt_recall <- c(dt_recall,curr_recall)
+  dt_precision <- c(dt_precision,curr_precision)
+  time_b = Sys.time()
+  
+  dt_time = dt_time + (time_b-time_a)
+  
+  #Random Forest
+  time_a = Sys.time()
+  fit2 <- randomForest(vote_average_cat ~ Action + Adventure + Fantasy + Science_Fiction + Crime +
+                         Drama + Thriller + Animation + Family + Western + Comedy + Romance + Horror + 
+                         Mystery + History + War + Music + Documentary + Foreign + TV_Movie +
+                         popularity + revenue,data=movies,subset = sub)
+  test_predict <- table(predict(fit2, movies[-sub, ], type = "class"), movies[-sub, "vote_average_cat"])
+  rf_acc <- c(rf_acc, sum(diag(test_predict)) / sum(test_predict))
+  curr_recall = test_predict[1,"Bad"]/(test_predict[1,"Bad"]+test_predict[2,"Bad"])
+  curr_precision = test_predict[1,"Bad"]/(test_predict[1,"Bad"]+test_predict[1,"Good"])
+  curr_f = 2 * (curr_precision * curr_recall) / (curr_precision + curr_recall)
+  rf_f <- c(rf_f,curr_f)
+  rf_recall <- c(rf_recall,curr_recall)
+  rf_precision <- c(rf_precision,curr_precision)
+  time_b = Sys.time()
+  
+  rf_time = rf_time+(time_b-time_a)
+  
+  #KNN
+  time_a=Sys.time()
+  movies_train <- movies[sub,]
+  movies_test <- movies[-sub,]
+  test_size <- nrow(movies_test)
+  best_k = 0
+  best_acc=0
+  
+  #Find the best k value based on best accuracy.
+  for(j in 1:30){
+    predict <- knn(movies_train[,3:26], movies_test[,3:26], movies_train$vote_average_cat, k=j)
+    curr_acc = sum(predict==movies_test$vote_average_cat) / test_size
+    if(curr_acc > best_acc){
+      best_acc = curr_acc
+      best_k = j
+    }
+  }
+  
+  time_b=Sys.time()
+  
+  predict <- knn(movies_train[,3:26], movies_test[,3:26], movies_train$vote_average_cat, k=best_k)
+  trial_sum[i] <- trial_sum[i] + sum(predict==movies_test$vote_average_cat)
+  trial_n[i] <- trial_n[i] + test_size
+  test_predict <- table(predict(fit2, movies[-sub, ], type = "class"), movies[-sub, "vote_average_cat"])
+  curr_recall = test_predict[1,"Bad"]/(test_predict[1,"Bad"]+test_predict[2,"Bad"])
+  curr_precision = test_predict[1,"Bad"]/(test_predict[1,"Bad"]+test_predict[1,"Good"])
+  curr_f = 2 * (curr_precision * curr_recall) / (curr_precision + curr_recall)
+  knn_f <- c(knn_f,curr_f)
+  knn_recall <- c(knn_recall,curr_recall)
+  knn_precision <- c(knn_precision,curr_precision)
+  knn_ks <- c(knn_ks,best_k)
+  
+  knn_time = knn_time + (time_b-time_a)
 }
 
+t_2 = Sys.time()
+
+#Desicion Tree
 mean(dt_acc)
+mean(dt_recall)
+mean(dt_precision)
+mean(dt_f)
 sd(dt_acc)*100
 max(dt_acc)*100 - min(dt_acc)*100
 
@@ -180,7 +280,7 @@ plot(1-dt_acc, type="l", ylab="Error Rate", xlab="Iterations", main="Error Rate 
 dt.tr <- tree(vote_average_cat ~ Action + Adventure + Fantasy + Crime + Science_Fiction +
                 Drama + Thriller + Animation + Family + Western + Comedy + Romance + Horror + 
                 Mystery + History + War + Music + Documentary + Foreign + TV_Movie +
-                popularity + revenue + vote_count,data=movies, split = "deviance")
+                popularity + revenue,data=movies, split = "deviance")
 dt.tr
 # display the results
 summary(dt.tr)
@@ -192,75 +292,56 @@ text(dt.tr)
 
 
 
-#Random Forest
-require(randomForest)
 
-
-dt_acc <- numeric()
-set.seed(1815850)
-
-for(i in 1:20){
-  sub <- sample(1:nrow(movies), size=nrow(movies)*0.7)
-  fit2 <- randomForest(vote_average_cat ~ Action + Adventure + Fantasy + Science_Fiction + Crime +
-                         Drama + Thriller + Animation + Family + Western + Comedy + Romance + Horror + 
-                         Mystery + History + War + Music + Documentary + Foreign + TV_Movie +
-                         popularity + revenue + vote_count,data=movies,subset = sub)
-  test_predict <- table(predict(fit2, movies[-sub, ], type = "class"), movies[-sub, "vote_average_cat"])
-  rf_acc <- c(dt_acc, sum(diag(test_predict)) / sum(test_predict))
-}
-
-mean(rf_acc)
+#Random Forest Results
+mean(rf_acc)*100
+mean(rf_recall)
+mean(rf_precision)
+mean(rf_f)
 sd(rf_acc)*100
 max(rf_acc)*100 - min(rf_acc)*100
 
 plot(1-rf_acc, type="l", ylab="Error Rate", xlab="Iterations", main="Error Rate for Movies With Different Subsets of Data with Random Forests")
 
 
-
-#Knn
-library(class) # Contains the "knn" function
-set.seed(498593) #Set the seed for reproducibility
-
-#Create partitions in the Iris data set (70% for training, 30% for testing/evaluation)
-movies_sample <- sample(1:nrow(movies), size=nrow(movies)*0.7)
-movies_train <- movies[movies_sample, ] #Select the 70% of rows
-movies_test <- movies[-movies_sample, ] #Select the 30% of rows
-
-#First try to determine the right K-value 
-movies_acc <- numeric() #holding variable
-
-for(i in 1:20){
-  #Apply knn with k = i
-  predict <- knn(train=movies_train[,3:26], test=movies_test[,3:26], cl=movies_train$vote_average_cat, k=i)
-  movies_acc <- c(movies_acc, mean(predict==movies_test$vote_average_cat))
-}
-
-#Plot error rates for k=1 to 20
-plot(1-movies_acc, type="l", ylab="Error Rate",  xlab="K", main="Error Rate for Movies with varying K")
-
-# Average accuracy of 20 k-values
-mean(movies_acc)
-
-
-trial_sum <- numeric(30)
-trial_n <- numeric(30)
-
-for(i in 1:100){
-  
-  movies_sample <- sample(1:nrow(movies), size=nrow(movies)*0.7)
-  movies_train <- movies[movies_sample,]
-  movies_test <- movies[-movies_sample,]
-  test_size <- nrow(movies_test)
-  
-  for(j in 1:30){
-    predict <- knn(movies_train[,3:26], movies_test[,3:26], movies_train$vote_average_cat, k=j)
-    trial_sum[j] <- trial_sum[j] + sum(predict==movies_test$vote_average_cat)
-    trial_n[j] <- trial_n[j] + test_size
-  }
-}
-
-plot(1-trial_sum / trial_n, type="l", ylab="Error Rate",xlab="K",main="Error Rate for Movies With Varying K (100 Samples)")
-
-max(trial_sum / trial_n)
+#KNN Results
+mean(trial_sum / trial_n)*100
+mean(knn_recall)
+mean(knn_precision)
+mean(knn_f)
 sd(trial_sum / trial_n)*100
+
+
+plot((1-trial_sum / trial_n)*100, type="l", ylab="Error Rate",xlab="K",main="Error Rate for Movies With Varying K (100 Samples)")
+plot(x=knn_ks,y=(1-trial_sum / trial_n)*100, type="p", ylab="Error Rate",xlab="K",main="Error Rate for Movies With Varying K (100 Samples)")
+
+
+#Plot with two y axis to show the best k values and accuracy rates in each fold.
+accs = (trial_sum / trial_n)*100
+d = data.frame(x =seq(1:100),
+               ks = knn_ks,
+               accs = accs)
+
+
+par(mar = c(5,5,2,5))
+with(d, plot(x, accs, type="l", col="red3",xlab="Iterations",
+             ylab="Accuracy",
+             ylim=c(95,99)))
+
+par(new = T)
+with(d, plot(x, ks, pch=16, axes=F, xlab=NA, ylab=NA, cex=1.2))
+axis(side = 4)
+mtext(side = 4, line = 3, 'Best K Values')
+
+#legend("top",
+#       legend=c("Accuracy", "Best K Values"),
+#       lty=c(1,0), pch=c(NA, 16), col=c("red3", "black"))
+
+
+
+#Running times
+dt_time/100
+rf_time/100
+knn_time/100
+t_2 - t_1
 
